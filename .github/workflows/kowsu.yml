@@ -26,14 +26,13 @@ on:
           - 'r547379 (Clang 20)'
           - 'r589343 (Clang 21)'
       hook_method:
-        description: 'Metode Root (MamboSU)'
+        description: 'Metode Root (MamboSU/KSU)'
         required: true
         type: choice
         default: 'susfs'
         options:
           - 'susfs'
           - 'kprobes'
-      # Input 'performance_patch' DIHAPUS karena digantikan oleh Matrix otomatis
 
 permissions:
   contents: write
@@ -74,6 +73,16 @@ jobs:
           sudo apt install -y git curl repo build-essential bc bison flex libssl-dev \
             libelf-dev python3 python3-pip unzip zip rsync libncurses-dev lld
 
+      # --- BARU: Clone Resource Patch di Root Workspace ---
+      - name: Prepare External Resources
+        run: |
+          echo "⬇️ Cloning Patch Resources ke Root Workspace..."
+          # Clone KowSU Patches
+          git clone https://github.com/yapixel/kowsu_patches.git kowsu_patches
+          
+          # Clone SUSFS (Khusus Android 12 5.10)
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android12-5.10 susfs4ksu
+
       - name: Init & Sync GKI
         run: |
           mkdir gki && cd gki
@@ -86,11 +95,10 @@ jobs:
           git remote add rama https://github.com/ramabondanp/android_kernel_common-5.10.git
           git fetch -j12 rama
           git checkout -b update-android12-5.10-staging rama/android12-5.10-staging
-          # Setup KernelSU-KowSU Clean Up
+          # Hapus sisa staging kernelsu jika ada
           rm -rf drivers/staging/kernelsu
 
       - name: Inject SoC Optimization
-        # Menggunakan matrix.profile
         if: matrix.profile == 'Snapdragon'
         working-directory: gki/common
         run: |
@@ -110,68 +118,67 @@ jobs:
       - name: Clean Build Config
         run: sed -i '2d' gki/common/build.config.gki
        
-      - name: Prepare Patch Resources
+      - name: Add KernelSU-Next (KOWX712)
+        working-directory: gki/common
         run: |
-          # 1. Kita butuh file patch-nya dulu!
-          # Saya asumsikan patch revert/enable berasal dari repo Yapixel atau serupa
-          echo "⬇️ Cloning Patch Resources..."
-          git clone https://github.com/yapixel/kowsu_patches.git ../kowsu_patches
-          
-          # Clone SUSFS repo juga di sini biar rapi
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android12-5.10 ../susfs4ksu
-
-      - name: Add KernelSU (KOWX712)
-        run: |
-          cd ${{ env.CONFIG }} # Pastikan variabel CONFIG sudah diset sebelumnya
           echo "⬇️ Adding KernelSU-Next..."
           curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/master/kernel/setup.sh" | bash -s master
 
       - name: Apply SUSFS Patches & Fix Conflicts
+        working-directory: gki/common
         run: |
-          cd ${{ env.CONFIG }}
+          # Definisikan Path Absolut agar tidak bingung
+          WORKSPACE="${{ github.workspace }}"
+          SUSFS_PATH="$WORKSPACE/susfs4ksu"
+          KOWSU_PATCH_PATH="$WORKSPACE/kowsu_patches"
           
-          # Variabel versi (Hardcode untuk GKI 12 5.10 atau ambil dari input)
           ANDROID_VER="android12"
           KERNEL_VER="5.10"
           
           echo "🔧 Applying SUSFS patches for $ANDROID_VER-$KERNEL_VER..."
           
-          # Copy file SUSFS
-          # Pastikan path source sesuai dengan hasil git clone di langkah "Prepare"
-          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VER}-${KERNEL_VER}.patch ./
-          cp -r ../susfs4ksu/kernel_patches/fs/* ./fs/
-          cp -r ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
+          # 1. Copy file SUSFS ke Kernel Source
+          cp "$SUSFS_PATH/kernel_patches/50_add_susfs_in_gki-${ANDROID_VER}-${KERNEL_VER}.patch" ./
+          cp -r "$SUSFS_PATH/kernel_patches/fs/"* ./fs/
+          cp -r "$SUSFS_PATH/kernel_patches/include/linux/"* ./include/linux/
 
-          # Terapkan Patch Utama ke Kernel
-          # Hapus '|| true' agar kita tahu jika gagal
-          patch -p1 -F 3 < 50_add_susfs_in_gki-${ANDROID_VER}-${KERNEL_VER}.patch
+          # 2. Terapkan Patch Utama (Tanpa || true agar error terlihat)
+          echo "Applying main SUSFS patch..."
+          patch -p1 -F 3 < "50_add_susfs_in_gki-${ANDROID_VER}-${KERNEL_VER}.patch"
 
-          # Masuk ke folder KernelSU untuk memperbaiki konflik
-          cd ./KernelSU
+          # 3. Masuk ke folder KernelSU untuk fix conflict
+          # Setup script KSU biasanya clone ke folder 'KernelSU' di root kernel
+          if [ -d "KernelSU" ]; then
+            cd KernelSU
+            echo "📂 Masuk ke direktori KernelSU..."
+          elif [ -d "drivers/kernelsu" ]; then
+            cd drivers/kernelsu
+            echo "📂 Masuk ke direktori drivers/kernelsu..."
+          else
+            echo "❌ Gagal menemukan direktori KernelSU!"
+            exit 1
+          fi
           
           echo "🔧 Reverting conflicting commits in KernelSU..."
-          if [ -f "../../kowsu_patches/KowSU/revert_commit_conflict_with_susfs.patch" ]; then
-             cp ../../kowsu_patches/KowSU/revert_commit_conflict_with_susfs.patch .
+          if [ -f "$KOWSU_PATCH_PATH/KowSU/revert_commit_conflict_with_susfs.patch" ]; then
+             cp "$KOWSU_PATCH_PATH/KowSU/revert_commit_conflict_with_susfs.patch" .
              patch -p1 --fuzz=3 < revert_commit_conflict_with_susfs.patch
              echo "✅ Revert success"
           else
-             echo "⚠️ Patch revert tidak ditemukan, melewati langkah ini..."
+             echo "❌ Patch revert tidak ditemukan di $KOWSU_PATCH_PATH"
+             exit 1
           fi
           
           echo "🔧 Enabling SUSFS integration in KernelSU..."
-          if [ -f "../../kowsu_patches/KowSU/enable_susfs_for_kowsu.patch" ]; then
-             cp ../../kowsu_patches/KowSU/enable_susfs_for_kowsu.patch ./
+          if [ -f "$KOWSU_PATCH_PATH/KowSU/enable_susfs_for_kowsu.patch" ]; then
+             cp "$KOWSU_PATCH_PATH/KowSU/enable_susfs_for_kowsu.patch" ./
              patch -p1 < enable_susfs_for_kowsu.patch
              echo "✅ Enable SUSFS success"
           fi
 
-          # Kembali ke root config
+          # Kembali ke root (gki/common)
           cd ..
-          
-          # Opsional: Sys fix patch (Hanya jika kamu yakin file ini ada)
-          # cp ../kernel_patches/sultan/sys.c_fix.patch ./ || echo "Sys fix not found, skipping"
-          # patch -p1 --fuzz=3 < sys.c_fix.patch || true
-          
+
       - name: Apply Critical Fixes
         working-directory: gki/common
         run: |
@@ -180,8 +187,13 @@ jobs:
           echo "# CONFIG_STACKPROTECTOR_PER_TASK is not set" >> arch/arm64/configs/gki_defconfig
           
           sed -i '/pr_warn.*disagrees about version of symbol.*/,+1 s/.*/return 1;/' kernel/module.c
-          sed -i '/^static int drm_atomic_check_valid_clones/,/^}/d' drivers/gpu/drm/drm_atomic_helper.c
-          sed -i '/ret = drm_atomic_check_valid_clones/,/return ret;/d' drivers/gpu/drm/drm_atomic_helper.c
+          
+          # Fix DRM Atomic Helper (Safety Check)
+          if grep -q "drm_atomic_check_valid_clones" drivers/gpu/drm/drm_atomic_helper.c; then
+            sed -i '/^static int drm_atomic_check_valid_clones/,/^}/d' drivers/gpu/drm/drm_atomic_helper.c
+            sed -i '/ret = drm_atomic_check_valid_clones/,/return ret;/d' drivers/gpu/drm/drm_atomic_helper.c
+          fi
+          
           sed -i 's/check_defconfig//' build.config.gki
 
       - name: Configure Kernel (Defconfig Injection)
@@ -189,7 +201,7 @@ jobs:
         run: |
           TARGET_CONFIG="arch/arm64/configs/gki_defconfig"
           ROOT_VARIANT="${{ github.event.inputs.hook_method }}"
-          SOC_PROFILE="${{ matrix.profile }}" # <-- Menggunakan Matrix Profile
+          SOC_PROFILE="${{ matrix.profile }}"
           
           echo "⚙️ Injecting Configuration for $SOC_PROFILE..."
           
@@ -276,7 +288,7 @@ jobs:
           
           NAME_INPUT="${{ github.event.inputs.kernel_name }}"
           ROOT_VARIANT="${{ github.event.inputs.hook_method }}"
-          SOC_PROFILE="${{ matrix.profile }}" # Matrix Variable
+          SOC_PROFILE="${{ matrix.profile }}"
           BUILD_TAG=""
 
           [ -n "$NAME_INPUT" ] && BUILD_TAG="-$NAME_INPUT"
@@ -309,7 +321,6 @@ jobs:
             TC_TAG="clang-r547379"
             TC_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/62cdcefa89e31af2d72c366e8b5ef8db84caea62/clang-r547379.tar.gz"
           else
-            # Clang 21
             TC_TAG="clang-r589343"
             TC_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r589343.tar.gz"
           fi
@@ -329,7 +340,7 @@ jobs:
 
       - name: Packaging & Release
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }} # Menggunakan Token PAT yang kamu buat
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           # 1. SETUP NAMA FILE
           BASE_VER=$(make -s kernelversion -C gki/common | tr -d '\n\r')
@@ -339,46 +350,41 @@ jobs:
           KNAME="${{ github.event.inputs.kernel_name }}"
           [ -z "$KNAME" ] && KNAME="Zixine-Elysium"
           
-          # Tentukan tag SusFS/Kprobes
           if [ "${{ github.event.inputs.hook_method }}" = "susfs" ]; then TAG="SusFS"; else TAG="Kprobes"; fi
           
-          # Nama File Akhir
           ZIP_NAME="AK3-kowsu-${KNAME}-${{ matrix.profile }}-${DATE}-${BASE_VER}-${TAG}.zip"
           
-          # 2. CLONE CUSTOM ANYKERNEL KAMU
-          # GANTI URL DI BAWAH INI DENGAN LINK REPO ANYKERNEL KAMU SENDIRI
+          # 2. CLONE CUSTOM ANYKERNEL
           AK3_REPO="https://github.com/zixine/anykernel" 
           git clone -q --depth=1 "$AK3_REPO" -b main anykernel
           
           # 3. MASUKKAN IMAGE & ZIP
-          cp gki/out/android12-5.10/dist/Image anykernel/
+          if [ -f "gki/out/android12-5.10/dist/Image" ]; then
+             cp gki/out/android12-5.10/dist/Image anykernel/
+          else
+             echo "❌ Error: Kernel Image tidak ditemukan!"
+             exit 1
+          fi
           
-          # Inject versi kernel ke script (opsional, biar rapi di TWRP)
           sed -i "s|kernel.string=.*|kernel.string=${FULL_VER}|g" anykernel/anykernel.sh
           
           cd anykernel
-          # Pastikan script punya izin eksekusi sebelum di-zip
           chmod +x anykernel.sh tools/magiskboot tools/ak3-core.sh META-INF/com/google/android/update-binary
           
           zip -r9 "../$ZIP_NAME" ./*
           cd ..
           
-          # 4. UPLOAD KE REPOSITORY RELEASE (CROSS-REPO)
+          # 4. UPLOAD KE REPOSITORY RELEASE
           TARGET_REPO="zixine/Kernel-GKI-12-5.10-release"
           RELEASE_TAG="${KNAME}-${DATE}"
           
           echo "🚀 Uploading $ZIP_NAME to $TARGET_REPO ($RELEASE_TAG)..."
-          
-          # Logic: Cek apakah Release Tag sudah ada?
-          # Jika sudah ada (misal job Snapdragon selesai duluan), kita cuma upload asset.
-          # Jika belum ada, kita buat release baru.
           
           if gh release view "$RELEASE_TAG" --repo "$TARGET_REPO" > /dev/null 2>&1; then
             echo "✅ Release exists, uploading asset..."
             gh release upload "$RELEASE_TAG" "$ZIP_NAME" --repo "$TARGET_REPO" --clobber
           else
             echo "🆕 Creating new release..."
-            # Catatan Rilis
             NOTES="Build Date: $(date)
             Clang: ${{ github.event.inputs.clang_version }}
             Status: ${{ github.event.inputs.release_status }}"
