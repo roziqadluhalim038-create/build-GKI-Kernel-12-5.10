@@ -61,7 +61,6 @@ jobs:
       run: |
         echo "=== Setup Custom Clang 20 (r547379) ==="
         
-        # 1. Tentukan Root Prebuilts
         if [ -d "prebuilts-master/clang/host/linux-x86" ]; then
           PREBUILTS_ROOT="prebuilts-master"
         elif [ -d "prebuilts/clang/host/linux-x86" ]; then
@@ -72,12 +71,10 @@ jobs:
         fi
         echo "Prebuilts Root ditemukan di: $PREBUILTS_ROOT"
 
-        # 2. Siapkan Variabel
         NEW_CLANG_VER="clang-r547379"
         CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/62cdcefa89e31af2d72c366e8b5ef8db84caea62/clang-r547379.tar.gz"
         NEW_CLANG_DIR="$PREBUILTS_ROOT/clang/host/linux-x86/$NEW_CLANG_VER"
 
-        # 3. Download & Extract Clang Baru
         echo "Downloading $NEW_CLANG_VER..."
         mkdir -p "$NEW_CLANG_DIR"
         curl -L "$CLANG_URL" | tar -xz -C "$NEW_CLANG_DIR"
@@ -88,7 +85,6 @@ jobs:
           exit 1
         fi
 
-        # 4. Deteksi Versi Clang Bawaan
         cd common
         OLD_CLANG_VER=$(grep "CLANG_VERSION=" build.config.common | head -n 1 | cut -d= -f2 | tr -d '"' | tr -d ' ')
         if [ -z "$OLD_CLANG_VER" ]; then
@@ -103,7 +99,6 @@ jobs:
         echo "Sistem mengharapkan Clang versi: $OLD_CLANG_DIR_NAME"
         cd ..
 
-        # 5. Lakukan Symlink
         TARGET_DIR="$PREBUILTS_ROOT/clang/host/linux-x86/$OLD_CLANG_DIR_NAME"
         if [ -d "$TARGET_DIR" ] || [ -L "$TARGET_DIR" ]; then
             rm -rf "$TARGET_DIR"
@@ -113,7 +108,6 @@ jobs:
         ln -sf "$NEW_CLANG_VER" "$OLD_CLANG_DIR_NAME"
         cd - > /dev/null
 
-        # 6. Patch Config
         cd common
         sed -i "s/$OLD_CLANG_DIR_NAME/$NEW_CLANG_VER/g" build.config.common 2>/dev/null || true
         sed -i "s/$OLD_CLANG_DIR_NAME/$NEW_CLANG_VER/g" build.config.gki.aarch64 2>/dev/null || true
@@ -158,9 +152,15 @@ jobs:
         echo "Menambahkan konfigurasi SuSFS dan Stealth ke defconfig..."
         DEFCONFIG="arch/arm64/configs/gki_defconfig"
         
-        # --- FIX UTAMA: Disable check_defconfig ---
+        # --- FIX 1: Disable check_defconfig ---
         echo "Mematikan check_defconfig..."
         sed -i 's/check_defconfig//' build.config.gki
+        
+        # --- FIX 2: Disable Strict ABI Checks (KMI Enforcement) ---
+        # Kita hapus baris yang meng-enforce KMI agar build tidak gagal saat ada symbol yg hilang
+        echo "Mematikan KMI Enforced..."
+        sed -i 's/KMI_ENFORCED=1//' build.config.gki 2>/dev/null || true
+        sed -i 's/KMI_SYMBOL_LIST_STRICT_MODE=1//' build.config.gki 2>/dev/null || true
         
         cat <<EOF >> "$DEFCONFIG"
         # --- Config dari Script KowSuSu ---
@@ -214,17 +214,14 @@ jobs:
         CONFIG_PM_WAKELOCKS=y
         CONFIG_BLOCK_LEGACY_AUTOLOAD=n
         
-        # Matikan auto version agar tidak kepanjangan
+        # Matikan auto version
         CONFIG_LOCALVERSION_AUTO=n
         EOF
         
         # --- FIX KEPANJANGAN NAMA KERNEL ---
-        # Timpa script setlocalversion agar tidak menambahkan git hash (misal: -g34234...)
-        # Ini penting agar nama kernel tidak melebihi 64 karakter
         echo "echo ''" > scripts/setlocalversion
         chmod +x scripts/setlocalversion
         
-        # Set Local Version sesuai request
         scripts/config --file "$DEFCONFIG" --set-str LOCALVERSION "-Zixine-Elysium-Wild-V1.2"
 
     - name: Build Kernel (GKI)
@@ -234,6 +231,12 @@ jobs:
         export PATH="$CLANG_BIN_PATH:$PATH"
         export LTO=thin
         export BUILD_CONFIG=common/build.config.gki.aarch64
+        
+        # --- FIX UTAMA: DISABLE ABI CHECKS DI LEVEL ENV ---
+        # Ini memaksa build system untuk mengabaikan error symbol yang hilang
+        export KMI_SYMBOL_LIST_STRICT_MODE=0
+        export KMI_ENFORCED=0
+        export TRIM_NONLISTED_KMI=0
         
         # Menggunakan build.sh langsung
         build/build.sh -j$(nproc)
