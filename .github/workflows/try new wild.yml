@@ -16,7 +16,6 @@ on:
         options:
           - 'RELEASE'
           - 'BETA'
-      # INPUT CLANG DIHAPUS. KITA PAKSA KE CLANG 19 DI SCRIPT.
       hook_method:
         description: 'Metode Root (MamboSU)'
         required: true
@@ -30,7 +29,6 @@ permissions:
   contents: write
 
 jobs:
-  # JOB 1: BUILD (Jalan Paralel)
   build-kernel:
     name: Build ${{ matrix.profile }}
     runs-on: ubuntu-22.04
@@ -57,7 +55,6 @@ jobs:
           sudo apt update && sudo apt install -y git curl build-essential bc bison flex libssl-dev \
             libelf-dev python3 python3-pip unzip zip rsync libncurses-dev lld
           
-          # FIX: Install Google Repo Tool Manual
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
@@ -76,15 +73,15 @@ jobs:
           echo "⬇️ Syncing..."
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch -j$(nproc --all)
           
-          # FAILSAFE: Cek folder build
+          # FAILSAFE: Pastikan folder build ada
           if [ ! -f "build/build.sh" ]; then
-            echo "⚠️ build/build.sh missing! Repo sync missed it. Cloning manually..."
+            echo "⚠️ build/build.sh missing! Cloning manually..."
             git clone https://android.googlesource.com/kernel/build -b common-android12-5.10 build
           fi
 
       - name: Update kernel source
+        working-directory: gki/common
         run: |
-          cd gki/common
           if ! git remote | grep -q rama; then
             git remote add rama https://github.com/ramabondanp/android_kernel_common-5.10.git
           fi
@@ -114,7 +111,6 @@ jobs:
           
           sed -i '2d' build.config.gki 
 
-          # Critical Fixes
           sed -i '/config STACKPROTECTOR_PER_TASK/{n;s/def_bool y/bool "Stack Protector per task"\n\tdefault y/;}' arch/arm64/Kconfig
           echo "# CONFIG_STACKPROTECTOR_PER_TASK is not set" >> arch/arm64/configs/gki_defconfig
           sed -i '/pr_warn.*disagrees about version of symbol.*/,+1 s/.*/return 1;/' kernel/module.c
@@ -162,24 +158,27 @@ jobs:
       - name: Setup Compiler & Build
         working-directory: gki
         run: |
-          mkdir -p prebuilts-master/clang/host/linux-x86
+          # --- PERBAIKAN: TETAP DI ROOT DIR GKI ---
+          CLANG_DIR="prebuilts-master/clang/host/linux-x86"
+          mkdir -p "$CLANG_DIR"
           
-          # --- HARDCODED CLANG 19 ---
           echo "🔧 Setting up Clang 19 (r536225)..."
           TC_TAG="clang-r536225"
           TC_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-2025/clang-r536225.tar.gz"
           
-          mkdir -p prebuilts-master/clang/host/linux-x86/$TC_TAG
-          curl -L "$TC_URL" | tar -xz -C prebuilts-master/clang/host/linux-x86/$TC_TAG
+          # Download & Extract
+          mkdir -p "$CLANG_DIR/$TC_TAG"
+          curl -L "$TC_URL" | tar -xz -C "$CLANG_DIR/$TC_TAG"
           
-          cd prebuilts-master/clang/host/linux-x86
-          rm -rf clang-r563880b
-          ln -sf "$TC_TAG" clang-r563880b
+          # Buat Symlink (Tanpa CD yang mengubah global state)
+          rm -rf "$CLANG_DIR/clang-r563880b"
+          ln -sf "$TC_TAG" "$CLANG_DIR/clang-r563880b"
           
-          # Verifikasi
-          ls -l ../../../../gki/build/build.sh || echo "❌ Build script missing!"
+          # Verifikasi File Build
+          echo "📂 Checking build script location..."
+          ls -l build/build.sh || echo "❌ Script still missing!"
           
-          # Build
+          # Jalankan Build (Posisi shell sekarang masih di folder 'gki')
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh
 
       - name: Package Kernel (Tanpa Release)
@@ -212,7 +211,6 @@ jobs:
           name: kernel-${{ matrix.profile }}
           path: gki/${{ env.ZIP_FINAL }}
 
-  # JOB 2: RELEASE
   release-kernels:
     name: Create Release
     needs: build-kernel
