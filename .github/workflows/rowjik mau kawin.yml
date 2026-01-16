@@ -1,0 +1,226 @@
+name: GKI Kernel Build - Wild KernelSU
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_version:
+        description: "Versi Android Common Kernel"
+        required: true
+        default: "common-android12-5.10"
+      manifest_url:
+        description: "Manifest URL"
+        required: true
+        default: "https://android.googlesource.com/kernel/manifest"
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout Workflow
+      uses: actions/checkout@v4
+
+    - name: Free Disk Space
+      run: |
+        echo "Membersihkan ruang disk..."
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf "/usr/local/share/boost"
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        echo "Ruang disk setelah pembersihan:"
+        df -h
+
+    - name: Install Dependencies
+      run: |
+        echo "Menginstall dependencies..."
+        sudo apt-get update
+        sudo apt-get install -y git curl repo build-essential bc bison flex libssl-dev \
+          libelf-dev python3 python3-pip unzip zip rsync libncurses-dev lld ccache \
+          cmake ninja-build
+
+    - name: Setup Git Config
+      run: |
+        git config --global user.email "bot@github.com"
+        git config --global user.name "GitHub Action"
+
+    - name: Initialize & Sync Kernel Source
+      run: |
+        mkdir -p android-kernel
+        cd android-kernel
+        
+        echo "Inisialisasi Repo untuk ${{ inputs.android_version }}..."
+        repo init --depth=1 -u ${{ inputs.manifest_url }} -b ${{ inputs.android_version }}
+        
+        echo "Syncing repo (ini mungkin memakan waktu)..."
+        repo sync -c -j$(nproc --all) --no-tags --fail-fast
+
+    - name: Setup Wild KernelSU
+      working-directory: android-kernel
+      run: |
+        echo "=== Menjalankan Setup Wild KernelSU ==="
+        cd common
+        curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
+        echo "Wild KernelSU Setup Selesai."
+
+    - name: Setup SuSFS (Manual)
+      working-directory: android-kernel/common
+      run: |
+        echo "=== Menjalankan Setup SuSFS ==="
+        # Clone repository SuSFS dari Simonpunk
+        # Branch disesuaikan dengan GKI Android 12 5.10
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android12-5.10 susfs-git
+        
+        echo "Copying SuSFS headers and fs files..."
+        # Menyalin folder include dan fs ke root kernel source
+        cp -r susfs-git/kernel_patches/include/* include/
+        cp -r susfs-git/kernel_patches/fs/* fs/
+        
+        echo "Applying SuSFS Core Patch..."
+        # Menerapkan patch utama untuk mengaktifkan hook SuSFS di kernel
+        cp susfs-git/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch .
+        patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch
+        
+        echo "[✓] SUSFS Core Patched & Enabled"
+
+    - name: Apply Xiaomi Compatibility Patches
+      working-directory: android-kernel/common
+      run: |
+        echo "Menerapkan patch kompatibilitas Xiaomi..."
+        sed -i '/pr_warn.*disagrees about version of symbol.*/,+1 s/.*/return 1;/' kernel/module.c
+        sed -i '/^static int drm_atomic_check_valid_clones/,/^}/d' drivers/gpu/drm/drm_atomic_helper.c
+        sed -i '/ret = drm_atomic_check_valid_clones/,/return ret;/d' drivers/gpu/drm/drm_atomic_helper.c
+
+    - name: Configure SuSFS & Stealth Features
+      working-directory: android-kernel/common
+      run: |
+        echo "Menambahkan konfigurasi SuSFS dan Stealth ke defconfig..."
+        DEFCONFIG="arch/arm64/configs/gki_defconfig"
+        
+        cat <<EOF >> "$DEFCONFIG"
+        # --- Config dari Script KowSuSu ---
+        CONFIG_KSU=y
+        CONFIG_KPM=n
+        CONFIG_KSU_MANUAL_HOOK=y
+        CONFIG_KSU_KPROBES_HOOK=n
+        
+        # SUSFS Configuration
+        CONFIG_KSU_SUSFS=y
+        CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+        CONFIG_KSU_SUSFS_SUS_PATH=y
+        CONFIG_KSU_SUSFS_SUS_MOUNT=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+        CONFIG_KSU_SUSFS_SUS_KSTAT=y
+        CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+        CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+        CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+        CONFIG_KSU_SUSFS_ENABLE_LOG=y
+        CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+        CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+        CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+        
+        # CPU & Performance
+        CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
+        CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
+        CONFIG_ENERGY_MODEL=y
+        
+        # Additional Stealth
+        CONFIG_KSU_SUSFS_SUS_SU=y
+        CONFIG_KSU_SUSFS_SUS_KSTAT_SPOOF_GENERIC=y
+        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSTAT=y
+        
+        CONFIG_HZ_500=y
+        CONFIG_CPU_FREQ=y
+        CONFIG_HIGH_RES_TIMERS=y
+        CONFIG_CLEANCACHE=y
+        CONFIG_TMPFS_XATTR=y
+        CONFIG_TMPFS_POSIX_ACL=y
+        
+        # User Optimization Configs
+        CONFIG_FS_ENCRYPTION=y
+        CONFIG_FS_VERITY=y
+        CONFIG_SLUB_DEBUG_ON=n
+        CONFIG_HARDENED_USERCOPY=n
+        CONFIG_RCU_FAST_NO_HZ=y
+        CONFIG_RCU_NOCB_CPU=y
+        CONFIG_PM_AUTOSLEEP=y
+        CONFIG_PM_WAKELOCKS=y
+        CONFIG_BLOCK_LEGACY_AUTOLOAD=n
+        EOF
+        
+        # Set Local Version
+        scripts/config --file "$DEFCONFIG" --set-str LOCALVERSION "-GotenX-WildKSU"
+
+    - name: Build Kernel (GKI)
+      working-directory: android-kernel
+      run: |
+        echo "Mulai Build Kernel..."
+        
+        # Setup variabel build
+        export LTO=thin
+        export BUILD_CONFIG=common/build.config.gki.aarch64
+        
+        # Gunakan script build bawaan GKI
+        tools/bazel run //common:kernel_aarch64_dist -- --keep_going || \
+        build/build.sh -j$(nproc)
+
+    - name: Package AnyKernel3
+      working-directory: android-kernel
+      run: |
+        echo "Cloning AnyKernel3 (zixine)..."
+        git clone https://github.com/zixine/anykernel.git anykernel
+        
+        echo "Mencari file Image hasil build..."
+        find out -name Image -type f -exec cp {} anykernel/ \;
+        
+        echo "Memeriksa apakah Image berhasil disalin..."
+        if [ ! -f anykernel/Image ]; then
+          echo "ERROR: File Image tidak ditemukan! Cek log build."
+          exit 1
+        fi
+        
+        echo "Membuat Zip AnyKernel3..."
+        cd anykernel
+        rm -rf .git
+        zip -r9 ../AnyKernel3-GotenX-WildKSU.zip * -x README.md
+        echo "Zip berhasil dibuat: AnyKernel3-GotenX-WildKSU.zip"
+
+    - name: Upload Image Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Image-WildKSU
+        path: android-kernel/out/**/dist/Image
+
+    - name: Upload AnyKernel3 Zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnyKernel3-Zip
+        path: android-kernel/AnyKernel3-GotenX-WildKSU.zip
+
+    - name: Release to External Repository
+      uses: softprops/action-gh-release@v2
+      if: success()
+      with:
+        # Gunakan secret dengan nama RELEASE_TOKEN
+        token: ${{ secrets.RELEASE_TOKEN }}
+        repository: zixine/Kernel-GKI-12-5.10-release
+        tag_name: "v${{ github.run_number }}-wildksu"
+        name: "WildKSU GKI Build v${{ github.run_number }}"
+        body: |
+          ## Wild KernelSU GKI Build
+          
+          **Android Version**: ${{ inputs.android_version }}
+          **Build ID**: ${{ github.run_number }}
+          
+          ### Features Included:
+          - KernelSU (Wild Version)
+          - SuSFS Stealth Mode Enabled
+          - Xiaomi Compatibility Patches
+          
+          _Automated build release._
+        files: |
+          android-kernel/AnyKernel3-GotenX-WildKSU.zip
+          android-kernel/out/**/dist/Image
