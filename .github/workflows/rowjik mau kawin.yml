@@ -42,8 +42,8 @@ jobs:
 
     - name: Setup Git Config
       run: |
-        git config --global user.email "bot@github.com"
-        git config --global user.name "GitHub Action"
+        git config --global user.email "waheid005@gmail.com"
+        git config --global user.name "zixine"
 
     - name: Initialize & Sync Kernel Source
       run: |
@@ -152,7 +152,7 @@ jobs:
         EOF
         
         # Set Local Version
-        scripts/config --file "$DEFCONFIG" --set-str LOCALVERSION "-GotenX-WildKSU"
+        scripts/config --file "$DEFCONFIG" --set-str LOCALVERSION "-Zixine-Elysium-Wild-V1.2"
 
     - name: Build Kernel (GKI)
       working-directory: android-kernel
