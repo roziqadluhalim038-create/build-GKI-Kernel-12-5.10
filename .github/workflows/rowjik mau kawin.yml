@@ -61,6 +61,13 @@ jobs:
         repo init --depth=1 -u https://android.googlesource.com/kernel/manifest -b ${{ inputs.android_version }}
         repo sync -c -j$(nproc --all) --no-tags --fail-fast
 
+        name: Update kernel source for GKI 5.10
+        run: |
+          cd gki/common
+          git remote add rama https://github.com/ramabondanp/android_kernel_common-5.10.git
+          git fetch -j12 rama
+          git checkout -b update-android12-5.10-staging rama/android12-5.10-staging
+
     - name: Setup Compiler (Dynamic Clang)
       working-directory: android-kernel
       run: |
