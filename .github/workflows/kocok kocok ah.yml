@@ -197,9 +197,9 @@ jobs:
           
           if [ "$HZ_VAL" = "500" ]; then
             echo "🚀 Applying 500Hz Patch..."
-            sed -i 's/config HZ_300/config HZ_500/g' "$KCONFIG_HZ"
-            sed -i 's/bool "300 HZ"/bool "500 HZ"/g' "$KCONFIG_HZ"
-            sed -i 's/default 300 if HZ_300/default 500 if HZ_500/g' "$KCONFIG_HZ"
+            sed -i 's/config HZ_250/config HZ_500/g' "$KCONFIG_HZ"
+            sed -i 's/bool "250 HZ"/bool "500 HZ"/g' "$KCONFIG_HZ"
+            sed -i 's/default 300 if HZ_250/default 500 if HZ_500/g' "$KCONFIG_HZ"
           else
             echo "ℹ️ Using default/300Hz (No change applied)."
           fi
